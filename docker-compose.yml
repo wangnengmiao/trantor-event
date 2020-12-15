@@ -1,0 +1,172 @@
+version: '2'
+services:
+  #Service for nameserver
+  namesrv:
+    image: rocketmqinc/rocketmq:4.2.0
+    container_name: rmqnamesrv
+    expose:
+      - '9876'
+    ports:
+      - 9876:9876
+    volumes:
+      - ./data/namesrv/logs:/home/rocketmq/logs
+    command: sh mqnamesrv
+
+  #Service for broker
+  broker:
+    image: rocketmqinc/rocketmq:4.2.0
+    container_name: rmqbroker
+    links:
+      - namesrv
+    ports:
+      - 10909:10909
+      - 10911:10911
+      - 10912:10912
+    environment:
+      - NAMESRV_ADDR=namesrv:9876
+    volumes:
+      - ./data/broker/logs:/home/rocketmq/logs
+      - ./data/broker/store:/home/rocketmq/store
+      - ./data/broker/conf/broker.conf:/opt/rocketmq-4.2.0/conf/broker.conf
+    command: sh mqbroker -c ../conf/broker.conf
+
+  mqconsole:
+    image: styletang/rocketmq-console-ng
+    container_name: rocketmq-console-ng
+    expose:
+      - '8080'
+    ports:
+      - 8090:8080
+    depends_on:
+      - namesrv
+    environment:
+      - NAMESRV_ADDR=namesrv:9876
+      - JAVA_OPTS= -Dlogging.level.root=info   -Drocketmq.namesrv.addr=namesrv:9876
+      - Dcom.rocketmq.sendMessageWithVIPChannel=false
+
+  mysql:
+    image: registry.cn-hangzhou.aliyuncs.com/terminus/trantor-mysql:5.7
+    container_name: trantor-mysql
+    environment:
+      MYSQL_USER: root
+      MYSQL_ROOT_PASSWORD: '${MYSQL_PASSWORD:-password}'
+    expose:
+      - 3306
+    ports:
+      - '${MYSQL_PORT:-3307}:3306'
+    command: --default-authentication-plugin=mysql_native_password --innodb_use_native_aio=0
+    volumes:
+      - ${TRANTOR_WORKSPACE:-~/.trantor}/data/mysql:/var/lib/mysql
+
+  datastore:
+    image: registry.cn-hangzhou.aliyuncs.com/terminus/datastore:5.2.0.21
+    container_name: trantor-datastore
+    restart: on-failure
+    expose:
+      - '8080'
+    ports:
+      - '${DS_PORT:-8081}:8080'
+      - '${DS_DUBBO_PORT:-20891}:20880'
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: '${MYSQL_PASSWORD:-password}'
+      NACOS_ADDRESS: nacos:8848
+      SUBSCRIBE: 'true'
+      DDL_FORMAT: '${DDL_FORMAT:-CAMELCASE}'
+      MQ_SERVER_ADDRESS: namesrv:9876
+    depends_on:
+      - mysql
+      - nacos
+      - namesrv
+
+  metastore:
+    image: registry.cn-hangzhou.aliyuncs.com/terminus/trantor-metastore:201125.184402
+    container_name: trantor-metastore
+    expose:
+      - '8082'
+    ports:
+      - '${META_STORE_PORT:-8082}:8080'
+    environment:
+      DS_HOST: datastore
+      DS_PORT: 8080
+      DS_PROJECT_ID: '${DS_PROJECT_ID:-trantor2}'
+      USER_MOCK: 'true'
+      EVENT_ENABLE: 'true'
+      DS_SUBSCRIBE: 'true'
+      DUBBO_ENABLED: 'false'
+      TENANT_ENABLE: 'true'
+      ACL_MOCK: 'true'
+      ADDRESS_CACHE: LOCAL
+      DISCOVERY_ENABLE_NACOS: 'true'
+      NACOS_ADDRESS: nacos:8848
+      MQ_SERVER_ADDRESS: namesrv:9876
+      TRANTOR_LOCAL_RESOURCE_BASE_PATH: /trantor-host
+      OSS_HOST: '${OSS_HOST:-oss-cn-hangzhou.aliyuncs.com}'
+      OSS_REGION: '${OSS_REGION:-oss-cn-hangzhou}'
+      OSS_AK: '${OSS_AK:-LTAI4FkL2GgZmDsQz1zVPrqC}'
+      OSS_AS: '${OSS_AS:-placeholder}'
+      OSS_TIMEOUT: '${OSS_TIMEOUT:-100}'
+      OSS_ARN: '${OSS_ARN:-acs:ram::1356642369236709:role/trantor}'
+      OSS_ROLE: '${OSS_ROLE:-metastore}'
+      SERVER_BUCKET: '${SERVER_BUCKET:-terminus-trantor}'
+    volumes:
+      - /:/trantor-host
+    depends_on:
+      - datastore
+      - nacos
+      - gateway
+      - namesrv
+
+  nacos:
+    image: registry.cn-hangzhou.aliyuncs.com/terminus/trantor-nacos
+    container_name: trantor-nacos
+    restart: on-failure
+    expose:
+      - '8848'
+    environment:
+      MODE: standalone
+    ports:
+      - '${NACOS_PORT:-8848}:8848'
+
+  gateway:
+    image: registry.cn-hangzhou.aliyuncs.com/terminus/trantor-gateway:0.13.0
+    container_name: trantor-gateway
+    restart: on-failure
+    expose:
+      - '8080'
+    ports:
+      - '${GATEWAY_PORT:-8765}:8080'
+    environment:
+      DISCOVERY_ENABLE_NACOS: 'true'
+      NACOS_ADDRESS: nacos:8848
+    depends_on:
+      - nacos
+
+  console:
+    image: registry.cn-hangzhou.aliyuncs.com/terminus/trantor-console:1.14.0-beta.9
+    container_name: trantor-console
+    expose:
+      - '8099'
+    ports:
+      - '${CONSOLE_PORT:-8099}:8099'
+    environment:
+      META_STORE_URL: '${FRONT_HOST:-trantor.terminus.io}:${GATEWAY_PORT:-8765}/meta-store'
+      GATEWAY_URL: '${FRONT_HOST:-trantor.terminus.io}:${GATEWAY_PORT:-8765}'
+      WORKSPACE_HIDDENS: Bell
+      DEBUG: '${CONSOLE_DEBUG:-false}'
+
+  workspace:
+    image: registry.cn-hangzhou.aliyuncs.com/terminus/trantor-workspace:1.14.0-beta.8
+    container_name: trantor-workspace
+    expose:
+      - '8098'
+    ports:
+      - '${WORKSPACE_PORT:-8098}:8098'
+    environment:
+      META_STORE_URL: '${FRONT_HOST:-trantor.terminus.io}:${GATEWAY_PORT:-8765}/meta-store'
+      GATEWAY_URL: '${FRONT_HOST:-trantor.terminus.io}:${GATEWAY_PORT:-8765}'
+      WORKSPACE_HIDDENS: Bell
+      DEBUG: '${WORKSPACE_DEBUG:-false}'
+
